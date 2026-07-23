@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const app = express();
 
 app.use(cors({
@@ -93,7 +94,9 @@ app.delete('/api/products/:id', async (req, res) => {
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   if (email === 'ziad@deci.com' && password === '0000') {
-    return res.status(200).json({ token: 'fake-jwt-token' });
+    const secret = process.env.JWT_SECRET || 'secret';
+    const token = jwt.sign({ email }, secret, { expiresIn: '2h' });
+    return res.status(200).json({ token });
   }
   return res.status(401).json({ message: 'Invalid credentials' });
 });
