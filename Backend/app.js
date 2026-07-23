@@ -27,6 +27,20 @@ const productSchema = new mongoose.Schema({
 
 const Product = mongoose.models.Product || mongoose.model('Product', productSchema);
 
+const authenticate = (req, res, next) => {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ message: 'No token' });
+  const token = auth.split(' ')[1];
+  try {
+    const secret = process.env.JWT_SECRET || 'secret';
+    const decoded = jwt.verify(token, secret);
+    req.user = decoded;
+    return next();
+  } catch (e) {
+    return res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
 app.get('/api/products', async (req, res) => {
   try {
     const docs = await Product.find({}).lean().exec().catch(() => []);
@@ -66,7 +80,7 @@ app.get('/api/products', async (req, res) => {
   ]);
 });
 
-app.post('/api/products', async (req, res) => {
+app.post('/api/products', authenticate, async (req, res) => {
   const { title, author, price, category } = req.body;
   if (!title || !author || typeof price === 'undefined' || !category) return res.status(400).json({ message: 'Missing fields' });
   try {
@@ -80,9 +94,10 @@ app.post('/api/products', async (req, res) => {
   }
 });
 
-app.delete('/api/products/:id', async (req, res) => {
+app.delete('/api/products/:id', authenticate, async (req, res) => {
   const id = Number(req.params.id);
   if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ message: 'Forbidden' });
   try {
     await Product.deleteOne({ id }).exec().catch(() => {});
     return res.status(200).json({ success: true });
@@ -93,9 +108,10 @@ app.delete('/api/products/:id', async (req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
-  if (email === 'ziad@deci.com' && password === '0000') {
+  if ((email === 'ziad@deci.com' || email === 'admin@deci.com') && password === '0000') {
     const secret = process.env.JWT_SECRET || 'secret';
-    const token = jwt.sign({ email }, secret, { expiresIn: '2h' });
+    const isAdmin = email === 'admin@deci.com';
+    const token = jwt.sign({ email, isAdmin }, secret, { expiresIn: '2h' });
     return res.status(200).json({ token });
   }
   return res.status(401).json({ message: 'Invalid credentials' });
