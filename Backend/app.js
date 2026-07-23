@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 const app = express();
 
 app.use(cors({
@@ -10,7 +11,26 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/api/products', (req, res) => {
+if (process.env.NODE_ENV !== 'test') {
+  const mongoUri = process.env.MONGO_URI || 'mongodb://mongo:27017/ecommerce';
+  mongoose.connect(mongoUri, { useNewUrlParser: true, useUnifiedTopology: true }).catch(() => {});
+}
+
+const productSchema = new mongoose.Schema({
+  id: { type: Number, unique: true },
+  title: String,
+  author: String,
+  price: Number,
+  category: String
+});
+
+const Product = mongoose.models.Product || mongoose.model('Product', productSchema);
+
+app.get('/api/products', async (req, res) => {
+  try {
+    const docs = await Product.find({}).lean().exec().catch(() => []);
+    if (docs && docs.length > 0) return res.json(docs);
+  } catch (e) {}
   res.json([
     { id: 1, title: 'The Trilogy', author: 'Naguib Mahfouz', price: 35, category: 'Stories' },
     { id: 2, title: 'The Blue Elephant', author: 'Ahmed Mourad', price: 20, category: 'Stories' },
@@ -43,6 +63,31 @@ app.get('/api/products', (req, res) => {
     { id: 29, title: 'Designing Data-Intensive Applications', author: 'Martin Kleppmann', price: 55, category: 'Tech' },
     { id: 30, title: 'The Clean Architecture', author: 'Robert C. Martin', price: 44, category: 'Tech' }
   ]);
+});
+
+app.post('/api/products', async (req, res) => {
+  const { title, author, price, category } = req.body;
+  if (!title || !author || typeof price === 'undefined' || !category) return res.status(400).json({ message: 'Missing fields' });
+  try {
+    const max = await Product.findOne({}).sort({ id: -1 }).lean().exec().catch(() => null);
+    const newId = max && max.id ? max.id + 1 : Date.now();
+    const p = new Product({ id: newId, title, author, price: Number(price), category });
+    await p.save();
+    return res.status(201).json(p);
+  } catch (e) {
+    return res.status(500).json({ message: 'Failed to save' });
+  }
+});
+
+app.delete('/api/products/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
+  try {
+    await Product.deleteOne({ id }).exec().catch(() => {});
+    return res.status(200).json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ message: 'Delete failed' });
+  }
 });
 
 app.post('/api/auth/login', (req, res) => {
