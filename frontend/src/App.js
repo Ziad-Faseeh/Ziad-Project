@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 function App() {
   const [books, setBooks] = useState([]);
@@ -27,21 +27,73 @@ function App() {
   const [newCategory, setNewCategory] = useState('Stories');
   const [showAddModal, setShowAddModal] = useState(false);
 
+  const pollRef = useRef(null);
+
+  const parseJwt = (token) => {
+    try {
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join(''));
+      return JSON.parse(jsonPayload);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const getToken = () => localStorage.getItem('token') || null;
+  const getAuthHeaders = () => {
+    const token = getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  const fetchProducts = () => {
+    fetch('http://localhost:5000/api/products', {
+      headers: {
+        ...getAuthHeaders()
+      }
+    })
+      .then(res => {
+        if (!res.ok) {
+          throw new Error('Server returned status: ' + res.status);
+        }
+        return res.json();
+      })
+      .then(data => setBooks(data))
+      .catch(err => {
+        console.error(err);
+        setError('Failed to load books: ' + err.message);
+      });
+  };
+
+  useEffect(() => {
+    const token = getToken();
+    if (token) {
+      const payload = parseJwt(token);
+      if (payload) {
+        if (payload.isAdmin) setIsAdmin(true);
+        if (payload.email) {
+          const nameFromEmail = payload.email.split('@')[0];
+          setUsername(nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1));
+        }
+        setIsLoggedIn(true);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (isLoggedIn) {
-      fetch('http://localhost:5000/api/products')
-        .then(res => {
-          if (!res.ok) {
-            throw new Error('Server returned status: ' + res.status);
-          }
-          return res.json();
-        })
-        .then(data => setBooks(data))
-        .catch(err => {
-          console.error(err);
-          setError('Failed to load books: ' + err.message);
-        });
+      fetchProducts();
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(fetchProducts, 10000);
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [isLoggedIn]);
 
   const handleAuth = (e) => {
@@ -50,9 +102,26 @@ function App() {
 
     if (authMode === 'login') {
       if (email === 'admin@deci.com' && password === '0000') {
-        setIsAdmin(true);
-        setUsername('Admin');
-        setIsLoggedIn(true);
+        fetch('http://localhost:5000/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data && data.token) {
+              localStorage.setItem('token', data.token);
+              const payload = parseJwt(data.token);
+              if (payload && payload.isAdmin) setIsAdmin(true);
+            }
+            setUsername('Admin');
+            setIsLoggedIn(true);
+          })
+          .catch(() => {
+            setIsAdmin(true);
+            setUsername('Admin');
+            setIsLoggedIn(true);
+          });
         return;
       }
 
@@ -68,9 +137,17 @@ function App() {
           return res.json();
         })
         .then(data => {
-          if (email === 'admin@deci.com') {
-            setIsAdmin(true);
-            setUsername('Admin');
+          const token = data && data.token;
+          if (token) {
+            localStorage.setItem('token', token);
+            const payload = parseJwt(token);
+            if (email === 'admin@deci.com' || (payload && payload.isAdmin)) {
+              setIsAdmin(true);
+              setUsername('Admin');
+            } else {
+              const nameFromEmail = email.split('@')[0];
+              setUsername(nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1));
+            }
           } else {
             const nameFromEmail = email.split('@')[0];
             setUsername(nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1));
@@ -96,6 +173,7 @@ function App() {
     setPassword('');
     setCart([]);
     if (authMode === 'login') setUsername('');
+    localStorage.removeItem('token');
   };
 
   const addToCart = (book) => {
@@ -131,7 +209,7 @@ function App() {
 
     fetch('http://localhost:5000/api/products', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         title: newTitle,
         author: newAuthor,
@@ -146,9 +224,12 @@ function App() {
     .catch(err => console.error('Network error, book kept locally:', err));
   };
   const handleDeleteBook = (id) => {
-    fetch(`http://localhost:5000/api/products/${id}`, { method: 'DELETE' })
+    fetch(`http://localhost:5000/api/products/${id}`, { method: 'DELETE', headers: { ...getAuthHeaders() } })
       .then(() => {
         setBooks(books.filter(book => book.id !== id));
+      })
+      .catch(err => {
+        console.error('Delete failed:', err);
       });
   };
 
@@ -224,7 +305,7 @@ function App() {
             />
           </div>
 
-          <button type="submit" style={{ width: '100%', backgroundColor: '#007bff', color: '#fff', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', marginBottom: '15px' }}>
+          <button type="submit" style={{ width: '100%', backgroundColor: '#007bff', color: '#fff', border: 'none', padding: '12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
             {authMode === 'login' ? 'Login' : 'Sign Up'}
           </button>
 
@@ -245,11 +326,13 @@ function App() {
   return (
     <div style={{ padding: '30px', fontFamily: 'Arial, sans-serif', backgroundColor: '#f4f7f6', minHeight: '100vh', display: 'flex', flexDirection: 'column', gap: '20px' }}>
       
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', padding: '15px 25px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', padding: '15px 25px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
         <h1 style={{ color: '#333', margin: 0, fontSize: '24px', fontWeight: 'bold' }}>Z-BOOK Store</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
           <span style={{ fontWeight: 'bold', color: '#555', fontSize: '15px' }}>Welcome, <span style={{ color: '#007bff' }}>{username}</span>!</span>
-          <button onClick={handleLogout} style={{ backgroundColor: '#e74c3c', color: '#fff', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}>Logout</button>
+          <button onClick={handleLogout} style={{ backgroundColor: '#e74c3c', color: '#fff', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            Logout
+          </button>
         </div>
       </div>
 
@@ -257,7 +340,9 @@ function App() {
         <div style={{ width: '100%', maxWidth: '1000px', margin: '20px auto', backgroundColor: '#fff', padding: '30px', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '25px' }}>
             <h2 style={{ margin: 0, color: '#333' }}>Admin Control Panel</h2>
-            <button onClick={() => setShowAddModal(true)} style={{ backgroundColor: '#27ae60', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' }}>+ New Book</button>
+            <button onClick={() => setShowAddModal(true)} style={{ backgroundColor: '#27ae60', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+              New Book
+            </button>
           </div>
 
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
@@ -278,7 +363,9 @@ function App() {
                   <td style={{ padding: '15px', color: '#007bff', fontWeight: 'bold', fontSize: '13px' }}>{book.category}</td>
                   <td style={{ padding: '15px', color: '#27ae60', fontWeight: 'bold' }}>${book.price}</td>
                   <td style={{ padding: '15px' }}>
-                    <button onClick={() => handleDeleteBook(book.id)} style={{ backgroundColor: '#e74c3c', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Delete</button>
+                    <button onClick={() => handleDeleteBook(book.id)} style={{ backgroundColor: '#e74c3c', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -408,7 +495,7 @@ function App() {
                 <button 
                   disabled={currentPage === 1}
                   onClick={() => setCurrentPage(prev => prev - 1)}
-                  style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #ccc', backgroundColor: currentPage === 1 ? '#e0e0e0' : '#fff', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+                  style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #ccc', backgroundColor: currentPage === 1 ? '#e0e0e0' : '#fff', cursor: currentPage === 1 ? 'not-allowed' : 'pointer' }}
                 >
                   Previous
                 </button>
@@ -416,7 +503,7 @@ function App() {
                 <button 
                   disabled={currentPage === totalPages}
                   onClick={() => setCurrentPage(prev => prev + 1)}
-                  style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #ccc', backgroundColor: currentPage === totalPages ? '#e0e0e0' : '#fff', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+                  style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #ccc', backgroundColor: currentPage === totalPages ? '#e0e0e0' : '#fff', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer' }}
                 >
                   Next
                 </button>
@@ -509,24 +596,24 @@ function App() {
       )}
 
       {showAddModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
           <form onSubmit={handleAddBook} style={{ backgroundColor: '#fff', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '400px', boxShadow: '0 4px 20px rgba(0,0,0,0.15)' }}>
             <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#333' }}>Add New Book</h3>
             <div style={{ marginBottom: '15px' }}>
               <label htmlFor="new-title" style={{ display: 'block', marginBottom: '5px', color: '#666', fontSize: '14px' }}>Title</label>
-              <input id="new-title" type="text" required value={newTitle} onChange={(e) => setNewTitle(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px', boxSizing: 'border-box', outline: 'none' }} />
+              <input id="new-title" type="text" required value={newTitle} onChange={(e) => setNewTitle(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px' }} />
             </div>
             <div style={{ marginBottom: '15px' }}>
               <label htmlFor="new-author" style={{ display: 'block', marginBottom: '5px', color: '#666', fontSize: '14px' }}>Author</label>
-              <input id="new-author" type="text" required value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px', boxSizing: 'border-box', outline: 'none' }} />
+              <input id="new-author" type="text" required value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px' }} />
             </div>
             <div style={{ marginBottom: '15px' }}>
               <label htmlFor="new-price" style={{ display: 'block', marginBottom: '5px', color: '#666', fontSize: '14px' }}>Price ($)</label>
-              <input id="new-price" type="number" step="0.01" required value={newPrice} onChange={(e) => setNewPrice(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px', boxSizing: 'border-box', outline: 'none' }} />
+              <input id="new-price" type="number" step="0.01" required value={newPrice} onChange={(e) => setNewPrice(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px' }} />
             </div>
             <div style={{ marginBottom: '20px' }}>
               <label htmlFor="new-category" style={{ display: 'block', marginBottom: '5px', color: '#666', fontSize: '14px' }}>Category</label>
-              <select id="new-category" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px', outline: 'none' }}>
+              <select id="new-category" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '6px' }}>
                 <option value="Stories">Stories</option>
                 <option value="Science">Science</option>
                 <option value="History">History</option>
